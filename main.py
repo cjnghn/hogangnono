@@ -1,6 +1,11 @@
+import time
+import os
+os.environ['WDM_LOG'] = '0'
+
 import requests
 import pandas as pd
 import tkinter as tk
+import traceback
 
 from typing import List
 from tkinter import filedialog
@@ -13,31 +18,37 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 
 
-def login(driver: WebDriver) -> List[dict]: 
-  driver.get('https://hogangnono.com')
+def login(driver: WebDriver) -> List[dict]:
+  try:
+    driver.get('https://hogangnono.com')
+    popup_button = WebDriverWait(driver, 10).until(
+      EC.presence_of_element_located((
+        By.CSS_SELECTOR, 'a[data-ga-event="intro,closeBtn"]'))
+    )
+    popup_button.click()
 
-  popup_button = WebDriverWait(driver, 10).until(
-    EC.presence_of_element_located((
-      By.CSS_SELECTOR, 'a[data-ga-event="intro,closeBtn"]'))
-  )
-  popup_button.click()
+    login_button = WebDriverWait(driver, 10).until(
+      EC.presence_of_element_located((
+        By.CSS_SELECTOR, 'a.btn-login'))
+    )
+    login_button.click()
 
-  login_button = WebDriverWait(driver, 10).until(
-    EC.presence_of_element_located((
-      By.CSS_SELECTOR, 'a.btn-login'))
-  )
-  login_button.click()
+    print('\n[*] 로그인을 진행하세요 ')
+    print('(웹 브라우저 창에서 로그인을 완료하면 자동으로 진행됩니다.)')
 
-  # https://hogangnono.com/my 로 리다이렉트 될 때까지 유저를 계속 기다린다.
-  # 5분이 지나도 리다이렉트가 안되면 에러가 발생한다.
-  WebDriverWait(driver, 60 * 5).until(
-    EC.url_to_be('https://hogangnono.com/my')
-  )
+    WebDriverWait(driver, 60 * 5).until(
+      EC.url_to_be('https://hogangnono.com/my')
+    )
+    print("=> 로그인이 완료되었습니다.")
 
-  # 현재 쿠키를 모두 가져오고, 쿠키를 출력한다.
-  cookies = driver.get_cookies()
-
-  return cookies
+    cookies = driver.get_cookies()
+    return cookies
+  
+  except Exception as e:
+    print("[!] 로그인 중 에러 발생:")
+    print(str(e))
+    traceback.print_exc()  # 에러 정보를 출력
+    return []
 
 
 def create_session(cookies: List[dict]) -> requests.Session:
@@ -60,7 +71,6 @@ def search(session: requests.Session, query: str) -> dict:
 
 
 def get_apt_id(search_data: dict) -> int:
-  # 검색 결과가 없을 경우
   if 'data' not in search_data or search_data['data'] is None:
     return None
 
@@ -81,7 +91,7 @@ def get_reviews(session: requests.Session, apt_id: int) -> List[dict]:
     review_data = review_response.json()
 
     if 'data' not in review_data or not review_data['data']:
-        break
+      break
 
     reviews = review_data['data'].get('data', [])
     for review in reviews:
@@ -92,11 +102,11 @@ def get_reviews(session: requests.Session, apt_id: int) -> List[dict]:
         '작성날짜': review.get('date'),
         '댓글': '\n'.join(
           [f"{comment['name']}: {comment['content']}" for comment in review.get('comments', [])])
-        if review.get('comments') else None
+          if review.get('comments') else None
       }
       reviews_list.append(formatted_review)
-    
-    review_params['page'] += 1  # 다음 페이지로 넘어가기
+
+    review_params['page'] += 1
 
   return reviews_list
 
@@ -111,35 +121,60 @@ def retrieve_file_path() -> str:
 
 
 def main():
-  with webdriver.Chrome(service=ChromeService(ChromeDriverManager().install())) as driver:
-    cookies = login(driver)
+  try:
+    print('[!] 주의: 실행 시 크롬 드라이버 설치를 위해 시간이 소요될 수 있습니다.')
+    print('=> 다음 메시지가 출력될 때까지 기다려주세요.')
+    print('=> 브라우저가 자동으로 열리면 로그인을 진행하세요.')
+    time.sleep(3)
 
-  session = create_session(cookies)
-  my_info = get_my_info(session)
-  if not my_info:
-    print("로그인에 실패하였습니다.")
-    return
+    # Chrome 드라이버 옵션 설정
+    chrome_options = webdriver.ChromeOptions()
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
 
-  excel_file_path = retrieve_file_path()
-  if not excel_file_path:
-    print("파일을 선택하지 않았습니다.")
-    return
+    with webdriver.Chrome(service=ChromeService(ChromeDriverManager().install(), options=chrome_options)) as driver:
+      cookies = login(driver)
 
-  # pandas를 사용하여 엑셀 파일 읽기
-  df = pd.read_excel(excel_file_path, header=None)
-  search_queries = df.iloc[:, 0].dropna().tolist()
+    if not cookies:
+      print("로그인에 실패하였습니다.")
+      return
 
-  for query in search_queries:
-    search_data = search(session, query)
-    apt_id = get_apt_id(search_data)
-    if apt_id is not None:
-      print(f"{query} 검색 결과: 아파트 ID {apt_id}")
-      reviews = get_reviews(session, apt_id)
-      reviews_df = pd.DataFrame(reviews)
-      with pd.ExcelWriter(excel_file_path, mode='a', engine='openpyxl') as writer:
-        reviews_df.to_excel(writer, sheet_name=query, index=False)
-    else:
-      print(f"{query} 검색 결과: 결과가 없습니다.")
+    session = create_session(cookies)
+    my_info = get_my_info(session)
+    if not my_info:
+      print("[!] 내 정보를 가져오는데 실패하였습니다.")
+      return
+
+    print(f"=> {my_info['data']['nickname']}님 환영합니다.")
+    
+    print("\n[*] 검색할 파일을 선택하세요.")
+    excel_file_path = retrieve_file_path()
+    if not excel_file_path:
+      print("[!] 파일을 선택하지 않았습니다.")
+      return
+
+    print("\n[*] 검색을 시작합니다.")
+    df = pd.read_excel(excel_file_path, header=None)
+    search_queries = df.iloc[:, 0].dropna().tolist()
+
+    with pd.ExcelWriter(excel_file_path, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
+      for query in search_queries:
+        search_data = search(session, query)
+        apt_id = get_apt_id(search_data)
+        if apt_id is not None:
+          print(f"=> {query} 검색 결과: 아파트 ID {apt_id}")
+          reviews = get_reviews(session, apt_id)
+          reviews_df = pd.DataFrame(reviews)
+
+          reviews_df.to_excel(writer, sheet_name=query, index=False)
+        else:
+          print(f"=> {query} 검색 결과: 결과가 없습니다.")
+    
+    print("\n=> 🐎 검색이 모두 완료되었습니다.")
+
+  except Exception as e:
+    print("[!] 오류 발생:")
+    print(str(e))
+    traceback.print_exc()
 
 
 if __name__ == '__main__':
